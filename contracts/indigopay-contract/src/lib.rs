@@ -14594,8 +14594,7 @@ mod tests {
         assert_eq!(receipt.receipt_commitment, expected);
         let plain: BytesN<32> = env.crypto().sha256(&xdr_bytes).into();
         assert_ne!(
-            receipt.receipt_commitment,
-            plain,
+            receipt.receipt_commitment, plain,
             "receipt commitment must be domain-separated"
         );
     }
