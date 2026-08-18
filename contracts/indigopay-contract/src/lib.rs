@@ -3754,7 +3754,7 @@ impl IndigoPayContract {
         let is_attester: bool = env
             .storage()
             .instance()
-            .get(&PathPaymentKey::PathPaymentAttester(attester.clone()))
+            .get(&PathPaymentKey::PathPaymentAttester(attester))
             .unwrap_or(false);
         if !is_attester {
             panic!("Not an authorised path payment attester");
