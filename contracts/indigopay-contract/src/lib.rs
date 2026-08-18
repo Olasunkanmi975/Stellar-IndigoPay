@@ -151,7 +151,19 @@ pub struct DonationRecord {
     pub currency: Symbol, // "XLM" or "USDC"
 }
 
-/// A cryptographically signed/hashed receipt proving a donation's details.
+/// Domain separator prefixed to receipt fields before hashing, so receipt
+/// commitments cannot be confused with hashes of the same fields in other
+/// protocols or contexts (e.g. the backend's PDF receipt hashing).
+pub const RECEIPT_DOMAIN_SEPARATOR: &[u8] = b"indigopay-receipt-v1";
+
+/// A tamper-evident donation receipt.
+///
+/// `receipt_commitment` is a SHA-256 **commitment** (not a cryptographic
+/// signature) over the domain-separated XDR encoding of the receipt fields.
+/// Every receipt field is public on-chain, so anyone can recompute the same
+/// value: it proves the receipt matches the on-chain record but does not
+/// authenticate who issued it. Downloadable tax receipt PDFs are additionally
+/// signed by the backend with an off-chain Ed25519 key.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct DonationReceipt {
@@ -162,7 +174,7 @@ pub struct DonationReceipt {
     pub co2_offset: i128,
     pub ledger: u32,
     pub currency: Symbol,
-    pub contract_signature: BytesN<32>,
+    pub receipt_commitment: BytesN<32>,
 }
 
 /// Helper struct used to compute the SHA-256 commitment of receipt fields.
@@ -5371,17 +5383,26 @@ impl IndigoPayContract {
     // ─── On-Chain Donation Receipts with Cryptographic Commitment (#455) ─────
 
     /// Generate a deterministic on-chain donation receipt with a SHA-256
-    /// cryptographic commitment. Only the donor can generate their own receipt.
+    /// commitment. Only the donor can generate their own receipt.
     ///
-    /// The returned `DonationReceipt` contains a `contract_signature` field
-    /// which is SHA-256 of the deterministic XDR encoding of all other fields.
-    /// Anyone can verify the receipt via `verify_receipt` without querying
-    /// the full donation history.
+    /// The returned `DonationReceipt` contains a `receipt_commitment` field
+    /// which is SHA-256 of the domain-separated deterministic XDR encoding of
+    /// all other fields. Anyone can verify the receipt via `verify_receipt`
+    /// without querying the full donation history.
+    ///
+    /// # Security note
+    ///
+    /// `receipt_commitment` is a tamper-evident **commitment**, not a
+    /// signature: every receipt field is public on-chain, so anyone can
+    /// recompute the same value. It proves the receipt matches the on-chain
+    /// record; it does not authenticate who issued it. Tax receipt PDFs are
+    /// additionally signed by the backend with an off-chain Ed25519 key (see
+    /// `backend/src/services/receiptGenerator.js`).
     ///
     /// # Determinism
     ///
     /// Calling `generate_receipt` twice with the same donor and donation_index
-    /// returns the identical receipt (same `contract_signature`), because the
+    /// returns the identical receipt (same `receipt_commitment`), because the
     /// receipt fields are sourced immutably from storage.
     ///
     /// # Panics
@@ -5413,7 +5434,7 @@ impl IndigoPayContract {
             .get(&DataKey::DonationCO2Offset(donation_index))
             .unwrap_or(0);
 
-        // Build the fields to hash (without the signature)
+        // Build the fields to hash (without the commitment)
         let fields = ReceiptFields {
             donation_index,
             donor: donor.clone(),
@@ -5424,12 +5445,17 @@ impl IndigoPayContract {
             currency: record.currency.clone(),
         };
 
-        // Compute SHA-256 commitment over the deterministic XDR encoding.
-        // Using XDR ensures the receipt can be verified off-chain with
-        // any Stellar SDK that supports XDR deserialization.
+        // Compute SHA-256 commitment over the domain-separated deterministic
+        // XDR encoding. The "indigopay-receipt-v1" prefix prevents the
+        // commitment from being confused with hashes of the same fields in
+        // other contexts. Using XDR ensures the receipt can be verified
+        // off-chain with any Stellar SDK that supports XDR deserialization.
         use soroban_sdk::xdr::ToXdr;
         let xdr_bytes = fields.to_xdr(&env);
-        let contract_signature: BytesN<32> = env.crypto().sha256(&xdr_bytes).into();
+        let mut commitment_msg = Bytes::new(&env);
+        commitment_msg.append(&Bytes::from_slice(&env, RECEIPT_DOMAIN_SEPARATOR));
+        commitment_msg.append(&xdr_bytes);
+        let receipt_commitment: BytesN<32> = env.crypto().sha256(&commitment_msg).into();
 
         env.events().publish(
             (symbol_short!("rcpt_gen"), donor.clone()),
@@ -5449,15 +5475,16 @@ impl IndigoPayContract {
             co2_offset,
             ledger: record.ledger,
             currency: record.currency.clone(),
-            contract_signature,
+            receipt_commitment,
         }
     }
 
     /// Verify a donation receipt against its on-chain data.
     ///
     /// Anyone can call this function — no authentication required. Returns
-    /// `true` if the receipt's `contract_signature` matches a recomputed
-    /// SHA-256 hash of the other receipt fields against the on-chain
+    /// `true` if the receipt's `receipt_commitment` matches a recomputed
+    /// SHA-256 commitment (over the `indigopay-receipt-v1` domain-separated
+    /// XDR encoding) of the other receipt fields against the on-chain
     /// donation record and CO₂ offset.
     ///
     /// Returns `false` if:
@@ -5465,7 +5492,7 @@ impl IndigoPayContract {
     /// - Any receipt field (donor, project_id, amount, ledger, currency)
     ///   does not match the on-chain `DonationRecord`.
     /// - The `co2_offset` does not match the on-chain value.
-    /// - The `contract_signature` has been tampered with.
+    /// - The `receipt_commitment` has been tampered with.
     #[cfg(feature = "donation")]
     pub fn verify_receipt(env: Env, receipt: DonationReceipt) -> bool {
         // Check the donation exists on-chain
@@ -5498,7 +5525,7 @@ impl IndigoPayContract {
             return false;
         }
 
-        // Recompute the SHA-256 commitment
+        // Recompute the domain-separated SHA-256 commitment
         let fields = ReceiptFields {
             donation_index: receipt.donation_index,
             donor: receipt.donor,
@@ -5511,9 +5538,12 @@ impl IndigoPayContract {
 
         use soroban_sdk::xdr::ToXdr;
         let xdr_bytes = fields.to_xdr(&env);
-        let computed: BytesN<32> = env.crypto().sha256(&xdr_bytes).into();
+        let mut commitment_msg = Bytes::new(&env);
+        commitment_msg.append(&Bytes::from_slice(&env, RECEIPT_DOMAIN_SEPARATOR));
+        commitment_msg.append(&xdr_bytes);
+        let computed: BytesN<32> = env.crypto().sha256(&commitment_msg).into();
 
-        computed == receipt.contract_signature
+        computed == receipt.receipt_commitment
     }
 
     /// Backward-compatible getter: returns the first admin in the set.
@@ -14484,12 +14514,37 @@ mod tests {
         assert_eq!(receipt.currency, symbol_short!("XLM"));
         // CO2 offset for 50 XLM at 100g/XLM (from setup): 50 * 100 = 5000g
         assert_eq!(receipt.co2_offset, 50 * 100);
-        // contract_signature must be non-zero (32 bytes)
+        // receipt_commitment must be non-zero (32 bytes)
         assert!(receipt
-            .contract_signature
+            .receipt_commitment
             .to_array()
             .iter()
             .any(|&b| b != 0));
+
+        // The commitment must be the domain-separated SHA-256 of the receipt
+        // fields — and must differ from a plain (non-separated) hash.
+        use soroban_sdk::xdr::ToXdr;
+        let fields = ReceiptFields {
+            donation_index: receipt.donation_index,
+            donor: donor.clone(),
+            project_id: receipt.project_id.clone(),
+            amount: receipt.amount,
+            co2_offset: receipt.co2_offset,
+            ledger: receipt.ledger,
+            currency: receipt.currency.clone(),
+        };
+        let xdr_bytes = fields.to_xdr(&env);
+        let mut msg = Bytes::new(&env);
+        msg.append(&Bytes::from_slice(&env, RECEIPT_DOMAIN_SEPARATOR));
+        msg.append(&xdr_bytes);
+        let expected: BytesN<32> = env.crypto().sha256(&msg).into();
+        assert_eq!(receipt.receipt_commitment, expected);
+        let plain: BytesN<32> = env.crypto().sha256(&xdr_bytes).into();
+        assert_ne!(
+            receipt.receipt_commitment,
+            plain,
+            "receipt commitment must be domain-separated"
+        );
     }
 
     #[test]
@@ -14516,7 +14571,7 @@ mod tests {
         assert_eq!(receipt_a.co2_offset, receipt_b.co2_offset);
         assert_eq!(receipt_a.ledger, receipt_b.ledger);
         assert_eq!(receipt_a.currency, receipt_b.currency);
-        assert_eq!(receipt_a.contract_signature, receipt_b.contract_signature);
+        assert_eq!(receipt_a.receipt_commitment, receipt_b.receipt_commitment);
     }
 
     #[test]

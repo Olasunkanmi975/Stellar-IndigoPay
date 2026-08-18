@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **contracts,backend:** rename the on-chain receipt `contract_signature` to `receipt_commitment` and domain-separate the SHA-256 commitment with the `indigopay-receipt-v1` prefix — receipts are now honestly labeled as tamper-evident commitments rather than signatures (no code or docs claim a hash is a signature); backend PDF receipts remain genuinely signed with the `RECEIPT_SIGNING_KEY` Ed25519 key (closes #660)
 - **contracts/oracle:** align TWAP observation window with staleness threshold invariant — reduce `DEFAULT_STALENESS_THRESHOLD` from 720 to 120 ledger sequences to match `MAX_OBSERVATIONS` capacity; enforce constraint that staleness threshold ≥ MAX_OBSERVATIONS at config time to prevent misconfiguration where operators believe oracle has long-window averaging when actual TWAP coverage is limited to ~20 observations (~100 seconds) (GrantFox GF-oracle-twap-alignment)
 - **gitops:** ArgoCD Application manifest for chart-driven reconciliation
 
