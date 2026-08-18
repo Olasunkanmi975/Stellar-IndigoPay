@@ -55,12 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **contracts,backend:** rename the on-chain receipt `contract_signature` to `receipt_commitment` and domain-separate the SHA-256 commitment with the `indigopay-receipt-v1` prefix — receipts are now honestly labeled as tamper-evident commitments rather than signatures (no code or docs claim a hash is a signature); backend PDF receipts remain genuinely signed with the `RECEIPT_SIGNING_KEY` Ed25519 key (closes #660)
+  - **Migration note:** receipts generated before this upgrade carry the old non-domain-separated commitment and will no longer pass `verify_receipt`; holders should call `generate_receipt` again after deployment to obtain a verifiable commitment. The underlying on-chain donation record is unaffected.
+- **frontend:** pin locale (`en-US`) and timezone (`UTC`) for date/number formatting helpers (`formatDate`, `formatDateTime`, `formatTime`, `formatMonthYear`, `formatNumber`) and replace raw `Intl.*`/`toLocaleString` calls in SSR-rendered components, making server/client output deterministic and eliminating hydration mismatches (closes #652)
 - **contracts/oracle:** align TWAP observation window with staleness threshold invariant — reduce `DEFAULT_STALENESS_THRESHOLD` from 720 to 120 ledger sequences to match `MAX_OBSERVATIONS` capacity; enforce constraint that staleness threshold ≥ MAX_OBSERVATIONS at config time to prevent misconfiguration where operators believe oracle has long-window averaging when actual TWAP coverage is limited to ~20 observations (~100 seconds) (GrantFox GF-oracle-twap-alignment)
 - **gitops:** ArgoCD Application manifest for chart-driven reconciliation
 
 ### Fixed
 
 - **backend:** durable deduplication for Soroban event processing with atomic cursor commit to prevent double-application on restart (closes #679, GrantFox OSS)
+- **backend:** compute donation/CO₂ projection arithmetic in BigInt (and keep stroop amounts as exact decimal strings) so i128 donations beyond 2^53 stay integer-exact in the leaderboard/impact/CO₂ projections instead of being rounded by JS `Number` (closes #681)
 - **gitops:** Argo Rollouts canary strategy with Prometheus success-rate analysis
 - **k8s:** default-deny NetworkPolicy for the `indigopay` namespace with explicit allow rules
 - **k8s:** HPA (min 2, max 10) + PDB (`minAvailable: 1`) for backend and frontend
@@ -85,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+* **contracts:** add a project-authorized `withdraw_stealth_donations` path to `DonationContract` (plus a `withdraw_stealth_integrated` forward wrapper on `IndigoPayContract`) with per-(project, token) withdrawable-balance accounting, CEI ordering, structured errors, and `StealthWithdrawal`/`stlth_wdr` events so stealth-donated funds are no longer permanently locked in the `DonationContract` (closes #621)
 * **frontend:** harden the production CSP — drop `'unsafe-inline'` from `script-src` (rely on nonce + `strict-dynamic`) and report violations via `report-to` alongside the deprecated `report-uri` (closes #688)
 * **backend:** reload the keeper account before each recurring submission so transaction sequence numbers are never stale — prevents `tx_bad_seq` when the account sequence advances externally or after a failed submission (closes #705)
 * **backend:** make Horizon donation indexing idempotent by operation ID, advance the cursor on replay, and allow multiple payment operations per transaction (closes #635)
