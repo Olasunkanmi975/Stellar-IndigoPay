@@ -3644,7 +3644,7 @@ impl IndigoPayContract {
             co2_offset,
             ledger: record.ledger,
             currency: record.currency,
-            contract_signature: BytesN::from_array(&env, &[0u8; 32]),
+            receipt_commitment: BytesN::from_array(&env, &[0u8; 32]),
         };
         env.storage().instance().set(&key, &receipt);
         env.events().publish(
