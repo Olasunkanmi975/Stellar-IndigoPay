@@ -25,7 +25,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read   # required for actions/checkout
-      issues: write    # required to create failure-tracking issues
 
     steps:
       - name: Checkout
@@ -74,44 +73,3 @@ jobs:
             echo "Check Stellar status: https://status.stellar.org"
             echo "Check contract explorer: https://stellar.expert/explorer/testnet/contract/${{ vars.SYNTHETIC_CONTRACT_ID || 'CCG3QSD7FWTZ5W7NG2N7UDYWYVXF3I2NY5JGT3QPTZ6KHOIKUHMMJ6BT' }}"
           fi
-
-      # On failure: open a GitHub issue if one doesn't already exist for the
-      # current day. This provides a paper trail even without a push gateway.
-      - name: Create failure issue (if needed)
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const today = new Date().toISOString().slice(0, 10);
-            const title = `[synthetic-monitor] Outage detected on ${today}`;
-
-            // Search for an existing open issue with the same title
-            const existing = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'synthetic-monitor',
-              per_page: 10,
-            });
-
-            const alreadyOpen = existing.data.some(i => i.title === title);
-            if (!alreadyOpen) {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body: `## Synthetic donation monitor failure\n\n` +
-                  `**Detected at:** ${new Date().toISOString()}\n` +
-                  `**Workflow run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n` +
-                  `The automated synthetic end-to-end donation check failed.\n` +
-                  `This may indicate Horizon, Soroban RPC, or the IndigoPay contract is degraded.\n\n` +
-                  `Check:\n` +
-                  `- Stellar status: https://status.stellar.org\n` +
-                  `- Contract explorer: https://stellar.expert/explorer/testnet/contract/CCG3QSD7FWTZ5W7NG2N7UDYWYVXF3I2NY5JGT3QPTZ6KHOIKUHMMJ6BT\n\n` +
-                  `_This issue was created automatically by the synthetic-monitor workflow._`,
-                labels: ['synthetic-monitor', 'area: monitoring', 'priority: critical'],
-              });
-              console.log('Created failure issue:', title);
-            } else {
-              console.log('Failure issue already exists for today — skipping.');
-            }
